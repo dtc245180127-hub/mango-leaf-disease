@@ -9,7 +9,6 @@ API Chẩn đoán Bệnh Lá Xoài bằng Trí tuệ Nhân tạo (FastAPI)
 import io
 import os
 import sys
-import socket
 import numpy as np
 import tensorflow as tf
 from PIL import Image, ImageOps
