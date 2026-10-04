@@ -1,45 +1,11 @@
 import base64
 import io
 import os
-import socket
-import cv2
 import numpy as np
-import qrcode
 from PIL import Image, ImageOps
 import plotly.graph_objects as go
 import streamlit as st
 import tensorflow as tf
-
-# Hỗ trợ định dạng HEIC/HEIF từ iPhone / iPad
-try:
-    import pillow_heif
-    pillow_heif.register_heif_opener()
-except ImportError:
-    pass
-
-
-def get_local_ip():
-    """Lấy địa chỉ IP mạng nội bộ (LAN) của máy tính"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = "127.0.0.1"
-    finally:
-        s.close()
-    return ip
-
-
-def generate_qr_code(url: str) -> bytes:
-    """Tạo ảnh mã QR dạng PNG bytes từ URL"""
-    qr = qrcode.QRCode(box_size=5, border=2)
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="#1b3815", back_color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 # 1. Cấu hình trang Streamlit
@@ -612,127 +578,6 @@ def preprocess_image(image_data):
     return data
 
 
-# --- HÀM TẠO GRAD-CAM TƯƠNG THÍCH MỌI CẤU TRÚC MODEL ---
-def generate_gradcam(img_array, model, pred_index=None):
-    try:
-        # 1. Tìm Base Model hoặc Sub-Model bên trong
-        target_model = model
-        base_layer = None
-
-        for layer in model.layers:
-            if hasattr(layer, "layers") or "mobilenet" in layer.name.lower():
-                base_layer = layer
-                break
-
-        # Nếu mô hình bao gồm base model dạng nested
-        if base_layer is not None:
-            # Tìm lớp conv cuối cùng trong base model
-            last_conv = None
-            for layer in reversed(base_layer.layers):
-                try:
-                    if len(layer.output_shape) == 4:
-                        last_conv = layer
-                        break
-                except Exception:
-                    continue
-
-            if last_conv is None:
-                last_conv = base_layer.get_layer("out_relu")
-
-            # Tạo feature extractor sub-model
-            feature_model = tf.keras.models.Model(
-                inputs=[base_layer.inputs], outputs=[last_conv.output]
-            )
-
-            # Lấy các lớp phân loại còn lại
-            classifier_layers = []
-            found = False
-            for layer in model.layers:
-                if layer == base_layer:
-                    found = True
-                    continue
-                if found:
-                    classifier_layers.append(layer)
-
-            with tf.GradientTape() as tape:
-                conv_outputs = feature_model(img_array)
-                tape.watch(conv_outputs)
-
-                x = conv_outputs
-                for layer in classifier_layers:
-                    x = layer(x)
-                predictions = x
-
-                if pred_index is None:
-                    pred_index = tf.argmax(predictions[0])
-                class_channel = predictions[:, pred_index]
-
-            grads = tape.gradient(class_channel, conv_outputs)
-            pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-
-            conv_outputs = conv_outputs[0]
-            heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-            heatmap = tf.squeeze(heatmap)
-
-        else:
-            # Mô hình phẳng (Flat Functional / Sequential Model)
-            last_conv_layer = None
-            for layer in reversed(model.layers):
-                try:
-                    if len(layer.output_shape) == 4:
-                        last_conv_layer = layer
-                        break
-                except Exception:
-                    continue
-
-            if last_conv_layer is None:
-                return None
-
-            grad_model = tf.keras.models.Model(
-                inputs=[model.inputs],
-                outputs=[last_conv_layer.output, model.output],
-            )
-
-            with tf.GradientTape() as tape:
-                conv_outputs, predictions = grad_model(img_array)
-                if pred_index is None:
-                    pred_index = tf.argmax(predictions[0])
-                class_channel = predictions[:, pred_index]
-
-            grads = tape.gradient(class_channel, conv_outputs)
-            pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-
-            conv_outputs = conv_outputs[0]
-            heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-            heatmap = tf.squeeze(heatmap)
-
-        # 2. Xử lý chuẩn hóa Heatmap về dải [0, 1]
-        heatmap = tf.maximum(heatmap, 0)
-        max_val = tf.math.reduce_max(heatmap)
-        if max_val > 0:
-            heatmap = heatmap / max_val
-
-        return heatmap.numpy()
-
-    except Exception as e:
-        print(f"Grad-CAM Error: {e}")
-        return None
-
-
-def overlay_heatmap(original_img, heatmap, alpha=0.4):
-    heatmap_resized = cv2.resize(
-        heatmap, (original_img.width, original_img.height)
-    )
-    heatmap_uint8 = np.uint8(255 * heatmap_resized)
-
-    heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
-    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
-
-    orig_np = np.array(original_img)
-    superimposed = heatmap_colored * alpha + orig_np * (1 - alpha)
-    superimposed = np.clip(superimposed, 0, 255).astype(np.uint8)
-
-    return Image.fromarray(superimposed)
 
 
 # 1. Biểu đồ hình tròn đồng hồ (Gauge Chart)
@@ -820,55 +665,6 @@ def create_colorful_bar_chart(predictions):
     return fig
 
 
-# ─── THANH ĐIỀU HƯỚNG BÊN TRÁI (SIDEBAR) ──────────────────────────────────
-local_ip = get_local_ip()
-web_url = f"http://{local_ip}:8501"
-api_url = f"http://{local_ip}:8000"
-
-with st.sidebar:
-    st.markdown("## 📱 Kết Nối Điện Thoại")
-    st.markdown("Quét mã QR bằng Camera điện thoại để mở ứng dụng:")
-    
-    try:
-        qr_bytes = generate_qr_code(web_url)
-        st.image(qr_bytes, caption=f"Địa chỉ: {web_url}", use_container_width=True)
-    except Exception:
-        pass
-    
-    st.markdown(
-        f"""
-        * **Wi-Fi chung:** Kết nối điện thoại vào cùng mạng Wi-Fi với máy tính.
-        * **Link truy cập:** [{web_url}]({web_url})
-        """
-    )
-
-    st.markdown("---")
-    st.markdown("## 🌐 RESTful API Server")
-    st.markdown(
-        f"""
-        Hệ thống tích hợp sẵn API chẩn đoán cho Mobile App & IoT:
-        * **Trạng thái:** 🟢 Đang hoạt động
-        * **API URL:** `{api_url}/predict`
-        * **Tài liệu Swagger:** [{api_url}/docs]({api_url}/docs)
-        """
-    )
-    with st.expander("💻 Xem mã gọi API (cURL / Python)"):
-        st.code(
-            f"""# 1. Gọi bằng cURL (Terminal/CMD):
-curl -X POST "{api_url}/predict" \\
-  -H "accept: application/json" \\
-  -H "Content-Type: multipart/form-data" \\
-  -F "file=@la_xoai.jpg"
-
-# 2. Gọi bằng Python:
-import requests
-url = "{api_url}/predict"
-with open("la_xoai.jpg", "rb") as f:
-    res = requests.post(url, files={{"file": f}})
-print(res.json())
-""",
-            language="bash",
-        )
 
 
 # Giao diện chính
@@ -920,27 +716,9 @@ with col1:
             image = _raw.convert("RGB")
         processed_img = preprocess_image(image)
 
-        # Tạo Tab chuyển đổi giữa Ảnh Gốc và Ảnh Grad-CAM
-        tab_orig, tab_cam = st.tabs(
-            ["Ảnh gốc", "Vùng AI tập trung (Grad-CAM)"]
+        st.image(
+            image, caption="Ảnh lá xoài cần chẩn đoán", use_container_width=True
         )
-
-        with tab_orig:
-            st.image(
-                image, caption="Ảnh đã chọn / chụp", use_container_width=True
-            )
-
-        with tab_cam:
-            heatmap = generate_gradcam(processed_img, model)
-            if heatmap is not None:
-                cam_img = overlay_heatmap(image, heatmap)
-                st.image(
-                    cam_img,
-                    caption="Vùng Đỏ/Cam đại diện cho khu vực AI chú ý nhất",
-                    use_container_width=True,
-                )
-            else:
-                st.info("Không thể tạo biểu đồ nhiệt cho ảnh này.")
 
 with col2:
     st.header("Kết quả chẩn đoán từ AI")
