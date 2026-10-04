@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.ipynb_checkpoints/
+
+# Dataset (quá nặng để đưa lên GitHub)
+dataset/
+
+# Model cũ .h5 (chỉ giữ .keras)
+mango_leaf_model.h5
+
+# IDE
+.vscode/
+.vs/
+
+# Các file tạm
+*.log
+*.tmp
+trim_unknown.py
+train.py
+Train.ipynb

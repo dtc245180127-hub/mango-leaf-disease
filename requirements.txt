@@ -1,0 +1,8 @@
+streamlit==1.41.1
+tensorflow-cpu==2.18.0
+pillow>=10.0.0
+numpy>=1.24.0
+plotly>=5.0.0
+opencv-python-headless>=4.8.0
+qrcode>=7.4
+pillow-heif>=0.13.0
